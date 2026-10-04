@@ -145,6 +145,12 @@ This makes Pi's normal agent loop execute tools, even though upstream model only
 - Small models may emit malformed JSON; parse errors are returned as visible assistant text so the model can self-correct next turn.
 - Prompt tool calls are only as reliable as model instruction following.
 
+## Health Check
+
+`checkHealth()` polls `GET /api/health` — an unauthenticated liveness probe that returns ~60 bytes instead of the ~200 KB `/v1/models` payload the probe used to download every 60 seconds. On a 404 (a server too old to expose the probe) it falls back to the authenticated `/v1/models`. `/omni setup` always probes `/v1/models`, so it still validates the URL and API key together. A network error or non-404 failure retries once to absorb cold starts.
+
+`session_start` and the 60s interval write a colored-dot status to the `omni` footer key: 🟢 `OmniRoute: ok`, 🟠 `OmniRoute: unconfigured`, 🔴 `OmniRoute: unreachable`. There is no color API, so the dot is an emoji character. The selected-model indicator uses a separate `omni-model` key so the next health tick cannot clobber it.
+
 ## API Key Handling
 
 `/omni setup` asks for the API key before testing `/v1/models` because protected remote OmniRoute deployments can require Authorization even for model listing. The key may still be blank for local/public deployments. Pi's provider registry and OpenAI-compatible SDK path require a non-empty API key string when registering custom models, so provider registration uses a harmless dummy value (`omniroute-public`) only when the saved key is empty. Real OmniRoute requests use the saved key when present.

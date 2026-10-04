@@ -14,7 +14,7 @@ Connect to your local or remote OmniRoute server and route queries across 44+ LL
 - **Model sync** — push all OmniRoute models into the `Ctrl+P` / `/model` picker with full metadata: context windows, max tokens, reasoning, and vision capabilities.
 - **Native tool calls** — the host's built-in `openai-completions` handler runs every request, so you get real SSE streaming and native `tool_calls` for all models.
 - **Smart sorting** — models grouped by provider prefix, auto-routing models (`auto`, `auto/coding`, etc.) always first.
-- **Health monitoring** — periodic reachability checks with status bar indicators.
+- **Health monitoring** — periodic reachability checks via the lightweight unauthenticated `/api/health` probe (falls back to `/v1/models` on older servers); the footer shows a colored dot: 🟢 ok, 🟠 unconfigured, 🔴 unreachable.
 - **Connection log** — every failed or abnormally slow connection attempt is appended as a JSON line to `<agent-home>/<state>/connection.log` for infra debugging; `ms` timings expose server cold starts, error fields include the fetch `cause` (e.g. `ECONNRESET`, `ETIMEDOUT`, TLS errors).
 - **Env overrides** — `OMNIROUTE_URL`, `OMNIROUTE_API_KEY`, `OMNIROUTE_PROVIDER_NAME` skip the setup wizard entirely.
 

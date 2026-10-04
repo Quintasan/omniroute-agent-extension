@@ -112,6 +112,13 @@ const CONNECTION_LOG_MAX_BYTES = 256 * 1024;
 const CONNECTION_LOG_MAX_LINES = 1000;
 const CONNECTION_LOG_SLOW_MS = 1_000;
 
+// `/api/health` is an unauthenticated liveness probe (~60 bytes vs ~200 KB for
+// `/v1/models`) used for reachability polling. Older servers lack it, so a 404
+// falls back to the authenticated model listing; setup always uses the latter
+// to also validate the URL and key.
+const HEALTH_PING_PATH = "/api/health";
+const HEALTH_FALLBACK_PATH = "/v1/models";
+
 function connectionLogPath(agentHome: string): string {
 	return join(agentHome, EXTENSION_STATE_DIR, "connection.log");
 }
@@ -230,54 +237,71 @@ async function requestJson(config: OmniConfig, path: string, init: RequestInit =
 // via a proxy), so a tight timeout reports a false "unreachable" while real
 // requests succeed. Match requestJson's 10s timeout and retry once: the first
 // attempt warms the origin, the retry then succeeds in the common case.
-async function checkHealth(agentHome: string, config: OmniConfig, context = "health"): Promise<boolean> {
+async function checkHealth(agentHome: string, config: OmniConfig, context = "health", path?: string): Promise<boolean> {
+	// An explicit path pins a single probe (setup uses the authenticated model
+	// listing); otherwise try the cheap liveness probe, then fall back on 404.
+	const candidates = path ? [path] : [HEALTH_PING_PATH, HEALTH_FALLBACK_PATH];
 	for (let attempt = 0; attempt < 2; attempt++) {
-		const started = Date.now();
-		try {
-			const res = await fetch(`${config.serverUrl}/v1/models`, {
-				headers: authHeaders(config),
-				signal: AbortSignal.timeout(10_000),
-			});
-			const ms = Date.now() - started;
-			// The health check only needs the status code — release the body
-			// stream (cancel, not read) so the socket/connection is freed
-			// whether this attempt succeeds, fails, or is retried.
+		for (const candidate of candidates) {
+			const started = Date.now();
 			try {
-				await res.body?.cancel();
-			} catch {
-				// body teardown must never change the health result
+				const res = await fetch(`${config.serverUrl}${candidate}`, {
+					headers: authHeaders(config),
+					signal: AbortSignal.timeout(10_000),
+				});
+				const ms = Date.now() - started;
+				// The health check only needs the status code — release the body
+				// stream (cancel, not read) so the socket/connection is freed
+				// whether this attempt succeeds, fails, or is retried.
+				try {
+					await res.body?.cancel();
+				} catch {
+					// body teardown must never change the health result
+				}
+				if (res.ok) {
+					// log slow successes — the cold-start signal that once caused
+					// false "unreachable" status
+					if (ms > CONNECTION_LOG_SLOW_MS)
+						appendConnectionLog(agentHome, { event: "health", context, attempt, path: candidate, ok: true, ms, server: config.serverUrl });
+					return true;
+				}
+				// A server too old to expose the liveness probe is not down.
+				if (!path && candidate === HEALTH_PING_PATH && res.status === 404) continue;
+				appendConnectionLog(agentHome, {
+					event: "health",
+					context,
+					attempt,
+					path: candidate,
+					ok: false,
+					ms,
+					status: res.status,
+					server: config.serverUrl,
+					error: (res.statusText || `HTTP ${res.status}`).slice(0, 200),
+				});
+			} catch (err) {
+				appendConnectionLog(agentHome, {
+					event: "health",
+					context,
+					attempt,
+					path: candidate,
+					ok: false,
+					ms: Date.now() - started,
+					server: config.serverUrl,
+					error: errorBrief(err),
+				});
+				// cold start / transient network blip — retry once
 			}
-			if (res.ok) {
-				// log slow successes — the cold-start signal that once caused
-				// false "unreachable" status
-				if (ms > CONNECTION_LOG_SLOW_MS)
-					appendConnectionLog(agentHome, { event: "health", context, attempt, ok: true, ms, server: config.serverUrl });
-				return true;
-			}
-			appendConnectionLog(agentHome, {
-				event: "health",
-				context,
-				attempt,
-				ok: false,
-				ms,
-				status: res.status,
-				server: config.serverUrl,
-				error: (res.statusText || `HTTP ${res.status}`).slice(0, 200),
-			});
-		} catch (err) {
-			appendConnectionLog(agentHome, {
-				event: "health",
-				context,
-				attempt,
-				ok: false,
-				ms: Date.now() - started,
-				server: config.serverUrl,
-				error: errorBrief(err),
-			});
-			// cold start / transient network blip — retry once
+			// a non-404 failure should re-probe, not fall through to the fallback
+			break;
 		}
 	}
 	return false;
+}
+
+// Footer status text. `setStatus` has no color parameter — the host renders the
+// string — so a colored dot carries the state at a glance.
+function healthLabel(ok: boolean): string {
+	return `${ok ? "🟢" : "🔴"} OmniRoute: ${ok ? "ok" : "unreachable"}`;
 }
 
 // ─── Model utilities ──────────────────────────────────────────────────────────
@@ -517,7 +541,7 @@ async function runSetup(ctx: any, pi: OmniPI, agentHome: string): Promise<OmniCo
 
 	const next = sanitizeConfig({ ...current, serverUrl, apiKey: apiKey || current.apiKey });
 
-	if (!(await checkHealth(agentHome, next, "setup"))) {
+	if (!(await checkHealth(agentHome, next, "setup", HEALTH_FALLBACK_PATH))) {
 		ctx.ui.notify(`Cannot reach ${next.serverUrl}/v1/models.`, "error");
 		return undefined;
 	}
@@ -526,6 +550,7 @@ async function runSetup(ctx: any, pi: OmniPI, agentHome: string): Promise<OmniCo
 	const models = await registerOmniProvider(pi, agentHome, next);
 	;(ctx as any).modelRegistry?.refresh?.();
 	ctx.ui.notify(`Saved. Synced ${models.length} model(s).`, "info");
+	ctx.ui.setStatus("omni", healthLabel(true));
 	return next;
 }
 
@@ -569,16 +594,16 @@ export async function createOmniExtension(pi: OmniPI, opts: AgentHomeOptions): P
 	pi.on("session_start", async (_event: any, ctx: any) => {
 		config = loadConfig(agentHome);
 		if (!existsSync(configPath(agentHome)) && !process.env.OMNIROUTE_URL) {
-			ctx.ui.setStatus("omni", "OmniRoute unconfigured");
+			ctx.ui.setStatus("omni", "🟠 OmniRoute: unconfigured");
 			ctx.ui.notify("OmniRoute loaded. Run /omni setup to connect.", "warning");
 			return;
 		}
 		const ok = await checkHealth(agentHome, config, "session_start");
-		ctx.ui.setStatus("omni", ok ? undefined : "OmniRoute unreachable");
+		ctx.ui.setStatus("omni", healthLabel(ok));
 		if (!ok) ctx.ui.notify(`OmniRoute unreachable at ${config.serverUrl}. Run /omni sync after reconnecting.`, "warning");
 		if (healthTimer) clearInterval(healthTimer);
 		healthTimer = setInterval(async () => {
-			ctx.ui.setStatus("omni", (await checkHealth(agentHome, loadConfig(agentHome), "interval")) ? undefined : "OmniRoute unreachable");
+			ctx.ui.setStatus("omni", healthLabel(await checkHealth(agentHome, loadConfig(agentHome), "interval")));
 		}, 60_000);
 	});
 
@@ -589,7 +614,7 @@ export async function createOmniExtension(pi: OmniPI, opts: AgentHomeOptions): P
 
 	pi.on("model_select", async (event: any, ctx: any) => {
 		const id = event.model?.id;
-		if (id) ctx.ui.setStatus("omni", `→ ${id}`);
+		if (id) ctx.ui.setStatus("omni-model", `→ ${id}`);
 	});
 
 	pi.registerTool({
