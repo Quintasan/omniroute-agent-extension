@@ -61,36 +61,30 @@ If changing function names or scan paths, update `AI.md` so future AI agents do 
 
 ## Coding Rules
 
-- Keep extension in `index.ts` unless feature grows enough to justify splitting files.
+- Keep shared logic in `shared.ts`; host-specific code stays in `pi.ts` / `omp.ts`.
 - Add short comments for non-obvious functions.
-- Preserve `/model` UX; do not add duplicate providers for prompt tools.
-- Keep `omni` as provider name.
-- Keep prompt fallback automatic.
+- Preserve `/model` UX; do not add duplicate providers.
+- Keep `omni` as the provider name and `openai-completions` as the api.
 - Avoid destructive behavior in `/omni sync`; it should only replace `config.providers.omni.models`.
 
 ## Testing Checklist
 
 For model sync changes:
 
-- `/omni setup` saves URL/API key.
-- `/omni sync` writes models to `~/.pi/agent/models.json`.
-- Web-synced models get `tool_calling:false` even when `-web` only appears in OmniRoute `owned_by`/provider metadata.
-- Normal models do not get forced into prompt mode.
-
-For prompt tool changes:
-
-- `npm run typecheck` passes.
-- `npm run smoke` passes.
-- A `tool_calling:false` model can trigger a tool call.
-- A native model still uses native tool calls.
-- Bad `<tool_call>` JSON surfaces correction text instead of silent failure.
+- `npm run typecheck` and `npm test` pass.
+- `/omni setup` saves URL/API key to `config.json`.
+- `/omni sync` writes models to `<agent-home>/models.json`.
+- Metadata maps correctly: context window, max tokens, reasoning, input modalities.
+- `pricing` maps into Pi `cost` (`input`/`output`/`cached`/`cache_creation`); missing fields default to 0.
+- Models without `pricing` stay at zero cost.
+- `reloadProviderFromModelsJson` normalizes legacy api ids and zero-fills partial costs.
 
 ## Commit Style
 
 Use descriptive commit messages. Good examples:
 
 ```text
-Add prompt-tool fallback for web-synced OmniRoute models
-Document OmniRoute prompt tool architecture
-Preserve raw tool_calling metadata during model sync
+Add OmniRoute model pricing to Pi cost
+Document model sync cost mapping
+Add connection log for failed requests
 ```

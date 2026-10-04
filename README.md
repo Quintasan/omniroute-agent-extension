@@ -11,7 +11,8 @@ Connect to your local or remote OmniRoute server and route queries across 44+ LL
 
 - **Wizard-based setup** — `/omni setup` inside `pi` or `omp`. No manual JSON editing.
 - **Dual CLI support** — one package, identical feature set for both `pi` and `omp`.
-- **Model sync** — push all OmniRoute models into the `Ctrl+P` / `/model` picker with full metadata: context windows, max tokens, reasoning, and vision capabilities.
+- **Model sync** — push all OmniRoute models into the `Ctrl+P` / `/model` picker with full metadata: context windows, max tokens, reasoning, vision capabilities, and per-model cost.
+- **Cost tracking** — OmniRoute's per-model `pricing` (USD per million tokens) is written into Pi's `cost`, so the footer and `/session` report real spend instead of `$0`. Models OmniRoute leaves unpriced stay at zero.
 - **Native tool calls** — the host's built-in `openai-completions` handler runs every request, so you get real SSE streaming and native `tool_calls` for all models.
 - **Smart sorting** — models grouped by provider prefix, auto-routing models (`auto`, `auto/coding`, etc.) always first.
 - **Health monitoring** — periodic reachability checks with status bar indicators.

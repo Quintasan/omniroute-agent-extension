@@ -50,6 +50,8 @@ interface OmniApiModel {
 	input?: unknown;
 	output_modalities?: unknown;
 	output?: unknown;
+	// USD per million tokens, same units as Pi's model cost.
+	pricing?: { input?: number; output?: number; cached?: number; cache_creation?: number };
 	type?: string;
 	provider?: string;
 }
@@ -62,6 +64,7 @@ type SyncedModel = {
 	maxTokens?: number;
 	reasoning?: boolean;
 	input?: string[];
+	cost?: { input: number; output: number; cacheRead: number; cacheWrite: number };
 };
 
 type ProviderModelConfig = {
@@ -291,6 +294,19 @@ function normalizeModalities(value: unknown): string[] {
 	return out;
 }
 
+// OmniRoute reports per-model pricing in USD per million tokens, matching Pi's
+// cost units. `cached` is a cache read; `cache_creation` is a cache write.
+function normalizeCost(pricing: OmniApiModel["pricing"]): SyncedModel["cost"] | undefined {
+	if (!pricing || typeof pricing !== "object") return undefined;
+	const num = (value: unknown) => (typeof value === "number" && Number.isFinite(value) ? value : 0);
+	return {
+		input: num(pricing.input),
+		output: num(pricing.output),
+		cacheRead: num(pricing.cached),
+		cacheWrite: num(pricing.cache_creation),
+	};
+}
+
 function isPiChatModel(model: OmniApiModel): boolean {
 	const output = normalizeModalities(model.output_modalities ?? model.output);
 	if (String(model.type || "chat").toLowerCase() === "image") return false;
@@ -312,6 +328,7 @@ function upsertSyncedModel(models: SyncedModel[], next: SyncedModel): void {
 		contextWindow: next.contextWindow ?? existing.contextWindow,
 		maxTokens: next.maxTokens ?? existing.maxTokens,
 		reasoning: existing.reasoning || next.reasoning,
+		cost: next.cost ?? existing.cost,
 	};
 }
 
@@ -344,6 +361,9 @@ async function fetchSyncedModels(config: OmniConfig, agentHome?: string): Promis
 
 		if (m.reasoning || m.capabilities?.reasoning || m.capabilities?.thinking) synced.reasoning = true;
 
+		const cost = normalizeCost(m.pricing);
+		if (cost) synced.cost = cost;
+
 		upsertSyncedModel(results, synced);
 	}
 
@@ -364,7 +384,7 @@ function buildProviderModelConfig(m: SyncedModel): ProviderModelConfig {
 		api: PROVIDER_API,
 		reasoning: m.reasoning ?? false,
 		input: m.input ?? ["text"],
-		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+		cost: m.cost ?? { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
 		contextWindow: m.contextWindow ?? 128_000,
 		maxTokens: m.maxTokens ?? 16_384,
 	};

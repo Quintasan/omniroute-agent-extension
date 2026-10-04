@@ -7,7 +7,7 @@ Instructions for AI agents working in this repository.
 Before editing, read:
 
 1. `AI.md` — fast project handoff and key function map.
-2. `ARCHITECTURE.md` — extension data flow and prompt-tool design.
+2. `ARCHITECTURE.md` — extension data flow and routing.
 3. `README.md` — user-facing behavior and commands.
 4. `CONTRIBUTING.md` — local checks and contribution rules.
 
@@ -20,7 +20,7 @@ Use this mapping:
 | Change type | Docs to update |
 |---|---|
 | User-visible command/setup/model behavior | `README.md` |
-| Provider flow, tool routing, prompt-tool logic | `ARCHITECTURE.md` |
+| Provider flow, tool routing, sync/cost mapping | `ARCHITECTURE.md` |
 | File layout, key function names, scan paths, pitfalls | `AI.md` |
 | Dev workflow, tests, contribution process | `CONTRIBUTING.md` |
 | Package scripts/deps | `README.md` Development section and `CONTRIBUTING.md` if relevant |
@@ -35,22 +35,25 @@ Keep model switching normal:
 /model <model-id>
 ```
 
-Do not introduce duplicate providers or separate manual prompt-tool model lists unless user explicitly asks.
-
-The provider should remain:
+The provider is always:
 
 ```text
 omni
 ```
 
-## Prompt Tool Constraint
+Do not introduce duplicate providers unless the user explicitly asks.
 
-Chat-only models should use prompt-emulated tools automatically when:
+## Routing Constraint
 
-- model id/name/provider or OmniRoute `owned_by` contains `-web`
-- or raw `models.json` model entry has `tool_calling:false`
+All synced models register with:
 
-Do not rely only on Pi runtime `Model` for custom metadata. Pi strips unknown fields; use raw `models.json` when needed.
+```ts
+api: "openai-completions"
+```
+
+Requests route through the host's built-in OpenAI-compatible handler. There is no prompt-emulation layer (removed in commit `7620a2d`); do not reintroduce one without an explicit request.
+
+Do not rely only on the host runtime `Model` for custom metadata. The host strips unknown fields; use raw `models.json` when needed.
 
 ## Test Before Reporting Done
 
@@ -58,26 +61,28 @@ Run:
 
 ```bash
 npm run typecheck
+npm test
 npm run smoke
 ```
 
-If tests cannot run, report exact command and failure.
+If tests cannot run, report the exact command and failure.
 
 ## Edit Guidance
 
 - Prefer small targeted edits.
 - Keep comments on non-obvious functions.
-- Preserve `/omni setup`, `/omni sync`, `/omni dashboard` behavior unless user asks to change it.
-- Keep prompt-tool format and parser docs in sync.
-- If adding files, update `AI.md` file map.
+- Preserve `/omni setup`, `/omni sync`, `/omni dashboard` behavior unless the user asks to change it.
+- Keep `/omni sync` non-destructive: it only replaces `config.providers.omni.models`.
+- If adding files, update the `AI.md` file map.
 
 ## Important Files
 
 | File | Why important |
 |---|---|
-| `index.ts` | Extension implementation. |
-| `AI.md` | AI scan guide; update when project structure/function map changes. |
-| `ARCHITECTURE.md` | Data flow and tool routing docs. |
+| `shared.ts` | Extension implementation. |
+| `pi.ts`, `omp.ts` | Host entrypoints; call `createOmniExtension`. |
+| `AI.md` | AI scan guide; update when structure/function map changes. |
+| `ARCHITECTURE.md` | Data flow and routing docs. |
 | `README.md` | User-facing documentation. |
 | `CONTRIBUTING.md` | Dev/test workflow. |
-| `package.json` | Pi extension metadata and scripts. |
+| `package.json` | Host extension metadata and scripts. |

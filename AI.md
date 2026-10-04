@@ -4,192 +4,111 @@ This file is the first stop for AI agents. Read this before scanning the repo.
 
 ## Repository Purpose
 
-`omniroute-pi-ext-integration` is a Pi Coding Agent extension for OmniRoute.
+`omniroute-agent-extension` is a Pi Coding Agent (`pi`) and Oh My Pi (`omp`) extension for OmniRoute.
 
 It does three jobs:
 
-1. `/omni setup` saves OmniRoute URL/API key into Pi `models.json` and tests protected endpoints with the entered key.
-2. `/omni sync` fetches OmniRoute `/v1/models` and syncs them into Pi's `/model` picker.
-3. The extension registers an `omni` provider that routes tool calling automatically:
-   - native tool-capable models use OpenAI-compatible native `tool_calls`
-   - chat-only models use prompt-emulated tools via `<tool_call>` blocks
+1. `/omni setup` saves the OmniRoute URL/API key into the extension config and verifies the server.
+2. `/omni sync` fetches OmniRoute `/v1/models` and syncs them into the host's `/model` picker with context window, max tokens, reasoning, vision, and per-model cost.
+3. It registers the `omni` provider so every model routes through the host's built-in `openai-completions` handler — native SSE streaming and native `tool_calls`, no middleware.
 
 ## Files
 
 | Path | Purpose |
 |---|---|
-| `index.ts` | Entire extension implementation. Commands, sync, provider registration, prompt-tool fallback. |
+| `shared.ts` | Entire extension implementation. Commands, sync, provider registration, health checks, connection log. |
+| `pi.ts` | Pi entrypoint; calls `createOmniExtension` with `PI_HOME` / `~/.pi/agent`. |
+| `omp.ts` | OMP entrypoint; calls `createOmniExtension` with `OMP_HOME` / `~/.omp/agent`. |
+| `test/shared.test.ts` | Node test suite. |
 | `README.md` | User-facing install/setup/usage docs. |
-| `package.json` | Pi extension metadata, scripts, dev deps. |
+| `package.json` | Host extension metadata, scripts, dev deps. |
 | `package-lock.json` | Locked npm dependency tree. |
+| `tsconfig.json` | NodeNext TS config. |
 | `AGENTS.md` | Mandatory instructions for AI agents editing this repo. |
-| `ARCHITECTURE.md` | Detailed data flow and prompt-tool architecture. |
-| `CONTRIBUTING.md` | Dev workflow, test checklist, and contribution rules. |
-| `LICENSE` | MIT license. |
+| `ARCHITECTURE.md` | Data flow and routing architecture. |
+| `CONTRIBUTING.md` | Dev workflow and contribution rules. |
+| `LICENSE` | MIT. |
 
 ## Key Concepts
 
 ### Provider name
 
-The Pi provider is always:
+The provider is always `omni`. Users switch models normally:
 
 ```text
-omni
-```
-
-Users keep switching models normally:
-
-```text
-/model cgpt-web/gpt-5.4-pro
+/model cc/claude-opus-5
 /model codex/gpt-5.2
 ```
 
-Do not create a second prompt-tools provider unless explicitly requested.
-
-### Custom API id
-
-The extension registers a synthetic API id:
-
-```ts
-const OMNI_PROMPT_TOOLS_API = "omni-prompt-tools";
-```
-
-That custom API routes through `streamOmni()`.
+Do not create a second provider. A single provider, single `api`, keeps the `/model` workflow unchanged.
 
 ### Underlying API
 
-Real HTTP calls still use Pi's built-in OpenAI-compatible provider:
+All models register with:
 
 ```ts
-const UNDERLYING_API = "openai-completions";
+const PROVIDER_API = "openai-completions";
 ```
 
-Native mode passes tools normally. Prompt mode strips native tools and renders tool schemas as text.
+Requests go through the host's built-in OpenAI-compatible handler. There is no prompt-emulation layer (removed in commit `7620a2d`); do not reintroduce it without an explicit request.
 
-## Tool Mode Decision
+### Model mapping
 
-Entry point:
+`fetchSyncedModels()` reads `/v1/models` and maps each chat model to a Pi model entry:
 
-```ts
-shouldUsePromptTools(model)
-```
+- `context_length` / `max_input_tokens` → `contextWindow`
+- `max_output_tokens` / `max_tokens` → `maxTokens`
+- `input_modalities` / `input` → `input`
+- `capabilities.reasoning` / `capabilities.thinking` / `reasoning` → `reasoning`
+- `pricing` → `cost` via `normalizeCost()`
 
-Prompt tool mode triggers when:
+`normalizeCost()` maps OmniRoute `pricing` to Pi `cost` in USD per million tokens: `input`→`input`, `output`→`output`, `cached`→`cacheRead`, `cache_creation`→`cacheWrite`. Missing fields default to 0; models without `pricing` are zero cost.
 
-1. raw `models.json` says the selected model has:
+### Auto models
 
-```json
-"tool_calling": false
-```
+`AUTO_MODELS` (`auto`, `auto/coding`, …) are synthetic entries prepended when the server does not return them. They are unpriced and always first in the picker.
 
-2. or model id/name/provider/OmniRoute `owned_by` contains:
-
-```text
--web
-```
-
-Reason: Pi's runtime `Model` type does not preserve custom fields like `tool_calling`, so the extension re-reads raw `models.json` in `modelConfigToolCallingFalse()`.
-
-## Important Functions In `index.ts`
+## Important Functions In `shared.ts`
 
 Read in this order:
 
-1. `registerOmniProvider()` — registers/refreshes the `omni` provider and model list.
-2. `streamOmni()` — runtime router for native vs prompt tool mode.
-3. `shouldUsePromptTools()` — decides if prompt tool fallback is needed.
-4. `streamWithPromptTools()` — prompt-tool stream implementation.
-5. `renderToolProtocol()` — converts Pi tool schemas into prompt text.
-6. `flattenMessages()` — converts native tool history into text history for chat-only models.
-7. `parseToolCalls()` — parses `<tool_call>` blocks from model output.
-8. `getAllModelsFromOmniRoute()` — fetches `/v1/models` and converts to Pi model entries.
-9. `humanName()` — user-friendly labels for Ctrl+P.
-
-## Prompt Tool Wire Format
-
-The chat-only model is instructed to emit:
-
-```xml
-<tool_call>
-{"name":"read","arguments":{"path":"index.ts"}}
-</tool_call>
-```
-
-Tool results are replayed in history as:
-
-```xml
-<tool_result tool="read" id="call_123">
-...tool output...
-</tool_result>
-```
-
-`streamWithPromptTools()` parses these text blocks and emits Pi native `toolcall_*` stream events so Pi executes tools normally.
+1. `createOmniExtension()` — factory; wires provider, agent tools, `/omni` command, and session events.
+2. `registerOmniProvider()` — syncs and registers the `omni` provider; persists `models.json`.
+3. `fetchSyncedModels()` — fetches `/v1/models` and maps to `SyncedModel`.
+4. `normalizeCost()` — maps OmniRoute `pricing` to Pi `cost`.
+5. `buildProviderModelConfig()` / `buildAutoModel()` — build Pi model entries.
+6. `reloadProviderFromModelsJson()` — offline registration from `models.json`; normalizes legacy api ids and zero-fills partial costs.
+7. `discoverModels()` — auto models plus synced models.
+8. `checkHealth()` — reachability probe; retries once for cold starts.
+9. `requestJson()` / `appendConnectionLog()` — HTTP helper and connection log.
+10. `runSetup()` / `testChat()` / `showStatus()` / `helpText()` — CLI surfaces.
 
 ## Common Change Requests
 
-### Add a new model detection rule
+### Change sync metadata
 
-Update:
+Update `fetchSyncedModels()` (and `SyncedModel`), `buildProviderModelConfig()`, and `normalizeCost()`. Then update `README.md` if user-visible and `ARCHITECTURE.md`.
 
-```ts
-shouldUsePromptTools()
-```
+### Add a slash subcommand
 
-Keep `modelConfigToolCallingFalse()` because raw `models.json` metadata is important.
-
-### Change OmniRoute sync metadata
-
-Update:
-
-```ts
-getAllModelsFromOmniRoute()
-SyncedModel
-```
-
-Then update README example model JSON if user-visible.
-
-### Change prompt tool format
-
-Update together:
-
-```ts
-renderToolProtocol()
-TOOL_CALL_RE
-renderToolCallBlock()
-parseToolCalls()
-README.md
-```
+Add a branch in the `/omni` command handler; update `getArgumentCompletions()`, `helpText()`, and `README.md`.
 
 ### Change setup behavior
 
-Update `/omni setup` handler near bottom of `index.ts`. Preserve the current order: ask for API key before testing `/v1/models`, because protected OmniRoute servers may require Authorization for model listing.
-
-### Change sync behavior
-
-Update `/omni sync` handler and `getAllModelsFromOmniRoute()`.
+Update `runSetup()`. Preserve the current order: ask for the API key before testing `/v1/models`, because protected OmniRoute servers may require Authorization for model listing.
 
 ## Test Commands
 
 ```bash
 npm run typecheck
+npm test
 npm run smoke
-```
-
-Expected smoke output:
-
-```text
-import ok
 ```
 
 ## Pitfalls
 
-- Do not rely only on Pi runtime `Model` for `tool_calling`; custom fields and OmniRoute `owned_by` are stripped.
-- Do not set web/chat-only models to a separate provider; keep `/model` workflow unchanged.
-- Do not send native `tools` to chat-only web-synced models; use prompt mode with `tools: []`.
-- `streamWithPromptTools()` is buffered, not token-streamed. It waits for full response so it can parse tool blocks safely.
-- Prompt mode drops non-text content in history because chat-only OpenAI-compatible endpoints here are treated as text-first.
-
-## Current Branch Intent
-
-Branch `prompt-tools-web-fallback` adds prompt-emulated tool calling inside the existing OmniRoute extension.
-
-Goal: no UX change for user. `/model` works same; extension chooses tool mode internally.
+- Pi strips unknown fields from the runtime `Model`; read raw `models.json` when custom metadata is needed.
+- `pricing` units are USD per million tokens — do not convert.
+- Keep `/omni sync` non-destructive: it only replaces `config.providers.omni.models`.
+- `requestJson()` and `checkHealth()` append failures to `connection.log`; keep logging non-fatal (never throw into the caller).
+- `tsconfig.json` includes `shared.ts`, `omp.ts`, `pi.ts`, `test/**/*.ts`.
