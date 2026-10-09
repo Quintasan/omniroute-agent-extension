@@ -86,9 +86,17 @@ const DEFAULT_CONFIG: OmniConfig = {
 };
 
 // ─── Path helpers ─────────────────────────────────────────────────────────────
+// Expands a leading `~/` (or bare `~`) the way Pi's own config resolver does,
+// so an env value like `~/.pi-alt/agent` is not joined as a cwd-relative path.
+function expandHome(value: string): string {
+	if (value === "~") return homedir();
+	if (value.startsWith("~/")) return join(homedir(), value.slice(2));
+	return value;
+}
+
 function resolveAgentHome(opts: AgentHomeOptions): string {
 	const env = process.env[opts.homeEnvVar];
-	if (env) return env;
+	if (env) return expandHome(env);
 	const parts = opts.defaultHome.replace(/^~\//, "").split("/");
 	return join(homedir(), ...parts);
 }

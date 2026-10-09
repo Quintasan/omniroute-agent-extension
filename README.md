@@ -121,7 +121,7 @@ npm run smoke       # import check for omp.ts and pi.ts
 |---|---|
 | `shared.ts` | All business logic — no host package imports; works in both `pi` and `omp` |
 | `omp.ts` | Oh My Pi entry point — `OMP_HOME` / `~/.omp/agent` |
-| `pi.ts` | Pi Coding Agent entry point — `PI_HOME` / `~/.pi/agent` |
+| `pi.ts` | Pi Coding Agent entry point — `PI_CODING_AGENT_DIR` / `~/.pi/agent` |
 
 ## Requirements
 

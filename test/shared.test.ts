@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -66,5 +66,54 @@ test("normalizes legacy Pi catalog API identifiers when reloading models.json", 
     if (previousHome === undefined) delete process.env[envName];
     else process.env[envName] = previousHome;
     rmSync(agentHome, { recursive: true, force: true });
+  }
+});
+
+// Regression guard for the CodeRabbit review on PR #22: a `~`-prefixed env
+// value must resolve against the home dir, not be joined as a cwd-relative path.
+test("expands a leading ~ in the agent-home env var", async () => {
+  const home = mkdtempSync(join(tmpdir(), "omniroute-home-test-"));
+  const agentDir = join(home, ".pi-alt");
+  const envName = "OMNIROUTE_TEST_TILDE_HOME";
+  const previousHome = process.env[envName];
+  const previousUserHome = process.env.HOME;
+  process.env.HOME = home;
+  process.env[envName] = "~/.pi-alt";
+
+  const registrations: Array<{ name: string; config: any }> = [];
+  const pi = {
+    registerProvider(name: string, config: any) {
+      registrations.push({ name, config });
+    },
+    registerTool() {},
+    registerCommand() {},
+    on() {},
+  };
+
+  try {
+    mkdirSync(agentDir, { recursive: true });
+    writeFileSync(
+      join(agentDir, "models.json"),
+      JSON.stringify({
+        providers: {
+          omni: {
+            baseUrl: "http://127.0.0.1:20128/v1",
+            apiKey: "test-key",
+            models: [{ id: "gpt-test", name: "GPT Test" }],
+          },
+        },
+      }),
+    );
+
+    await createOmniExtension(pi, { homeEnvVar: envName, defaultHome: "~/.unused" });
+
+    assert.equal(registrations.length, 1);
+    assert.equal(registrations[0].config.models[0].id, "gpt-test");
+  } finally {
+    if (previousHome === undefined) delete process.env[envName];
+    else process.env[envName] = previousHome;
+    if (previousUserHome === undefined) delete process.env.HOME;
+    else process.env.HOME = previousUserHome;
+    rmSync(home, { recursive: true, force: true });
   }
 });
