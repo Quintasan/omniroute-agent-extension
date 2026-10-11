@@ -4,5 +4,6 @@ export default async function (pi: OmniPI): Promise<void> {
   await createOmniExtension(pi, {
     homeEnvVar: "OMP_HOME",
     defaultHome: "~/.omp/agent",
+    singletonKey: "omniroute",
   });
 }

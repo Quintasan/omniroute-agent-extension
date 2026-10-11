@@ -29,6 +29,15 @@ export interface OmniPI {
 export interface AgentHomeOptions {
 	homeEnvVar: string;
 	defaultHome: string;
+	/**
+	 * Process-wide singleton key shared by every OmniRoute entrypoint
+	 * (`pi.ts`, `omp.ts`, `prime.ts`). A host may resolve more than one of them
+	 * from the same manifest (for example `prime.ts` is listed under
+	 * `pi.extensions`), which would register the same tools and commands twice.
+	 * The first entrypoint with a given key wins; the rest become no-ops. The
+	 * claim is released on `session_shutdown` so `/reload` re-registers cleanly.
+	 */
+	singletonKey?: string;
 }
 
 // ─── Internal types ───────────────────────────────────────────────────────────
@@ -722,7 +731,31 @@ async function testChat(config: OmniConfig, model: string, agentHome?: string): 
 }
 
 // ─── Factory ──────────────────────────────────────────────────────────────────
+/**
+ * Guard multiple OmniRoute entrypoints that load in one host process. Returns
+ * `true` when this call should continue, or `false` when another entrypoint
+ * already claimed the shared `singletonKey` for this session.
+ */
+function claimSingleton(pi: OmniPI, key: string | undefined): boolean {
+	if (!key) return true;
+	const symbol = Symbol.for(`omniroute-agent-extension:${key}`);
+	const scope = globalThis as unknown as Record<symbol, boolean | undefined>;
+	if (scope[symbol]) return false;
+	scope[symbol] = true;
+	// Release when the session ends (including `/reload`) so a fresh load can
+	// register again instead of staying permanently suppressed.
+	pi.on("session_shutdown", () => {
+		delete scope[symbol];
+	});
+	return true;
+}
+
 export async function createOmniExtension(pi: OmniPI, opts: AgentHomeOptions): Promise<void> {
+	if (!claimSingleton(pi, opts.singletonKey)) return;
+	await initOmniExtension(pi, opts);
+}
+
+async function initOmniExtension(pi: OmniPI, opts: AgentHomeOptions): Promise<void> {
 	const agentHome = resolveAgentHome(opts);
 	let config = loadConfig(agentHome);
 	let healthTimer: ReturnType<typeof setInterval> | undefined;

@@ -63,11 +63,13 @@ The extension does not proxy chat requests. The host sends requests directly to 
 
 Prime Agent currently reads the Pi-compatible manifest path. `prime.ts` is included under `pi.extensions` in `package.json`. Do not add a separate top-level `prime` manifest key unless real Prime runtime behavior or docs require it.
 
+Because Pi reads the same manifest, it would otherwise load both `pi.ts` and `prime.ts` and reject the duplicate `omniroute_*` tools. All three entrypoints therefore pass the same `singletonKey: "omniroute"`, and `createOmniExtension()` lets only the first one register tools, commands, and handlers. The claim is released on `session_shutdown` so `/reload` re-registers cleanly.
+
 ## Important functions in `shared.ts`
 
 Read in this order:
 
-1. `createOmniExtension()` — entrypoint used by `pi.ts`, `omp.ts`, and `prime.ts`.
+1. `createOmniExtension()` — entrypoint used by `pi.ts`, `omp.ts`, and `prime.ts`; wraps `initOmniExtension()` with the process-wide `singletonKey` guard.
 2. `runSetup()` — setup flow, health probe, provider registration, config save.
 3. `fetchSyncedModels()` — fetches `/v1/models`, filters chat-capable models, maps metadata and pricing.
 4. `normalizeCost()` — maps OmniRoute `pricing` into host model `cost`.
@@ -167,6 +169,7 @@ prime ok
 - Do not reintroduce the old `index.ts` single-entry architecture.
 - Do not revive prompt-emulated tool routing unless explicitly asked; current routing uses host-native `openai-completions`.
 - Do not put `omp.ts` under `pi.extensions`; OMP belongs under `omp.extensions`.
+- Do not remove the shared `singletonKey` from the entrypoints while `prime.ts` stays under `pi.extensions`; without it, loading both entrypoints in one host duplicates `omniroute_status`/`omniroute_sync` and `/omni`.
 - Do not remove Prime support when porting old PRs.
 - Do not derive tok/s locally from latency.
 - Do not overwrite the whole docs from stale PR branches; preserve current Pi/OMP/Prime and telemetry docs.
