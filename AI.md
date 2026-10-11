@@ -63,13 +63,13 @@ The extension does not proxy chat requests. The host sends requests directly to 
 
 Prime Agent currently reads the Pi-compatible manifest path. `prime.ts` is included under `pi.extensions` in `package.json`. Do not add a separate top-level `prime` manifest key unless real Prime runtime behavior or docs require it.
 
-Because Pi reads the same manifest, it would otherwise load both `pi.ts` and `prime.ts` and reject the duplicate `omniroute_*` tools. All three entrypoints therefore pass the same `singletonKey: "omniroute"`, and `createOmniExtension()` lets only the first one register tools, commands, and handlers. The claim is released on `session_shutdown` so `/reload` re-registers cleanly.
+Because Pi reads the same manifest, it would otherwise load both `pi.ts` and `prime.ts` and reject the duplicate `omniroute_*` tools. All three entrypoints therefore pass the same `singletonKey: "omniroute"`, and `createOmniExtension()` lets only the first one register tools, commands, and handlers. The claim is coordinated over the host event bus (`pi.events`), which is shared by all extensions in one session runtime, so the first entrypoint in a session wins while a second session in the same process still registers. `createOmniExtension()` releases the claim on `session_shutdown` (so `/reload` re-registers cleanly) and on initialization failure (so a later entrypoint or retry can take over).
 
 ## Important functions in `shared.ts`
 
 Read in this order:
 
-1. `createOmniExtension()` — entrypoint used by `pi.ts`, `omp.ts`, and `prime.ts`; wraps `initOmniExtension()` with the process-wide `singletonKey` guard.
+1. `createOmniExtension()` — entrypoint used by `pi.ts`, `omp.ts`, and `prime.ts`; wraps `initOmniExtension()` with the per-runtime `singletonKey` guard.
 2. `runSetup()` — setup flow, health probe, provider registration, config save.
 3. `fetchSyncedModels()` — fetches `/v1/models`, filters chat-capable models, maps metadata and pricing.
 4. `normalizeCost()` — maps OmniRoute `pricing` into host model `cost`.

@@ -4,7 +4,7 @@
 
 ### Fixed
 
-- Guard against duplicate registration when a host loads more than one OmniRoute entrypoint. `pi.ts`, `omp.ts`, and `prime.ts` now share a `singletonKey` so only the first one registers `omniroute_status`, `omniroute_sync`, and `/omni`. This fixes the `Tool "omniroute_status" conflicts with .../pi.ts` error when Pi loads both `pi.ts` and `prime.ts` from `pi.extensions`.
+- Guard against duplicate registration when a host loads more than one OmniRoute entrypoint. `pi.ts`, `omp.ts`, and `prime.ts` now share a `singletonKey` so only the first one registers `omniroute_status`, `omniroute_sync`, and `/omni`. The claim is coordinated over the host event bus, so it is scoped to a session runtime: multiple sessions in one process each register, and a failed initialization or `session_shutdown` releases the claim for the next load. This fixes the `Tool "omniroute_status" conflicts with .../pi.ts` error when Pi loads both `pi.ts` and `prime.ts` from `pi.extensions`.
 
 ## 3.2.3
 

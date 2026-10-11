@@ -23,6 +23,16 @@ export interface OmniPI {
 		},
 	): void;
 	on(event: string, handler: (event: any, ctx: any) => any): void;
+	/**
+	 * Extension event bus. Pi exposes it on every extension API object, and all
+	 * extensions loaded into one session runtime share the same underlying bus.
+	 * OmniRoute uses it to elect a single registrant when several entrypoints
+	 * load together, without leaking process-wide state.
+	 */
+	events?: {
+		emit(channel: string, data?: unknown): void;
+		on(channel: string, handler: (data: any) => void): () => void;
+	};
 }
 
 // ─── Public export ────────────────────────────────────────────────────────────
@@ -30,12 +40,13 @@ export interface AgentHomeOptions {
 	homeEnvVar: string;
 	defaultHome: string;
 	/**
-	 * Process-wide singleton key shared by every OmniRoute entrypoint
-	 * (`pi.ts`, `omp.ts`, `prime.ts`). A host may resolve more than one of them
-	 * from the same manifest (for example `prime.ts` is listed under
-	 * `pi.extensions`), which would register the same tools and commands twice.
-	 * The first entrypoint with a given key wins; the rest become no-ops. The
-	 * claim is released on `session_shutdown` so `/reload` re-registers cleanly.
+	 * Singleton key shared by every OmniRoute entrypoint (`pi.ts`, `omp.ts`,
+	 * `prime.ts`). A host may resolve more than one of them from the same
+	 * manifest (for example `prime.ts` is listed under `pi.extensions`), which
+	 * would register the same tools and commands twice. The first entrypoint to
+	 * load in a session runtime wins; later ones become no-ops. Because the
+	 * claim is scoped to the runtime, multiple sessions in one process each
+	 * register independently.
 	 */
 	singletonKey?: string;
 }
@@ -731,28 +742,71 @@ async function testChat(config: OmniConfig, model: string, agentHome?: string): 
 }
 
 // ─── Factory ──────────────────────────────────────────────────────────────────
+const SINGLETON_CLAIM_CHANNEL = "omniroute-agent-extension:claim";
+const SINGLETON_DENY_CHANNEL = "omniroute-agent-extension:claim:deny";
+
+interface SingletonClaim {
+	claimed: boolean;
+	release(): void;
+}
+
 /**
- * Guard multiple OmniRoute entrypoints that load in one host process. Returns
- * `true` when this call should continue, or `false` when another entrypoint
- * already claimed the shared `singletonKey` for this session.
+ * Guard multiple OmniRoute entrypoints that load into one session runtime.
+ *
+ * Every runtime (that is, one active session) owns an event bus but hands each
+ * extension its own API object, so the bus is the shared, per-session scope
+ * used to elect a single registrant. The first entrypoint announces itself on
+ * the claim channel and keeps a listener; later entrypoints are denied
+ * synchronously and become no-ops. A new session gets a new bus and registers
+ * independently, and the claim is released on `session_shutdown` so `/reload`
+ * on a reused runtime registers again.
  */
-function claimSingleton(pi: OmniPI, key: string | undefined): boolean {
-	if (!key) return true;
-	const symbol = Symbol.for(`omniroute-agent-extension:${key}`);
-	const scope = globalThis as unknown as Record<symbol, boolean | undefined>;
-	if (scope[symbol]) return false;
-	scope[symbol] = true;
-	// Release when the session ends (including `/reload`) so a fresh load can
-	// register again instead of staying permanently suppressed.
-	pi.on("session_shutdown", () => {
-		delete scope[symbol];
+function claimSingleton(pi: OmniPI, key: string | undefined): SingletonClaim {
+	if (!key) return { claimed: true, release: () => {} };
+	const events = pi.events;
+	if (!events || typeof events.on !== "function" || typeof events.emit !== "function") {
+		// Hosts without an event bus cannot coordinate; do not suppress.
+		return { claimed: true, release: () => {} };
+	}
+
+	const claimChannel = `${SINGLETON_CLAIM_CHANNEL}:${key}`;
+	const denyChannel = `${SINGLETON_DENY_CHANNEL}:${key}`;
+	const token = {};
+	let denied = false;
+
+	const offDeny = events.on(denyChannel, (data: any) => {
+		if (data?.token === token) denied = true;
 	});
-	return true;
+	const offClaim = events.on(claimChannel, (data: any) => {
+		if (data?.token !== token) events.emit(denyChannel, { token: data?.token });
+	});
+
+	// `emit` is synchronous, so an existing registrant's denial is observed
+	// before the listener is removed. The claim listener outlives this check to
+	// deny entrypoints that load later in the same runtime.
+	events.emit(claimChannel, { token });
+	offDeny();
+
+	if (denied) {
+		offClaim();
+		return { claimed: false, release: () => {} };
+	}
+
+	const release = () => offClaim();
+	pi.on("session_shutdown", release);
+	return { claimed: true, release };
 }
 
 export async function createOmniExtension(pi: OmniPI, opts: AgentHomeOptions): Promise<void> {
-	if (!claimSingleton(pi, opts.singletonKey)) return;
-	await initOmniExtension(pi, opts);
+	const claim = claimSingleton(pi, opts.singletonKey);
+	if (!claim.claimed) return;
+	try {
+		await initOmniExtension(pi, opts);
+	} catch (error) {
+		// Let a later entrypoint (or a retry) register when this one fails.
+		claim.release();
+		throw error;
+	}
 }
 
 async function initOmniExtension(pi: OmniPI, opts: AgentHomeOptions): Promise<void> {
