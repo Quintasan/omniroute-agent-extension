@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- Capture streaming tok/s reliably. Streaming SSE telemetry is now parsed and emitted incrementally instead of only in the `TransformStream` `flush` callback. Pi's OpenAI SDK stops at `data: [DONE]` and cancels the body, so `flush` never ran and the final `usage.tokens_per_second` chunk was dropped, leaving the status at `tok/s unavailable`.
+
 ## 3.2.3
 
 ### Added

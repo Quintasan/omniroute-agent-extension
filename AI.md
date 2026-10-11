@@ -118,6 +118,8 @@ It reads telemetry from:
 
 Never calculate tok/s from latency. OmniRoute owns that measurement.
 
+Streaming SSE telemetry is parsed incrementally and emitted after each chunk. Do not move capture back into the `TransformStream` `flush` callback: Pi's OpenAI SDK stops at `data: [DONE]` and cancels the body instead of draining to EOF, so `flush` never runs and the final `usage.tokens_per_second` chunk is lost.
+
 ## Common change requests
 
 ### Change OmniRoute sync metadata

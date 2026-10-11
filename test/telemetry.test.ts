@@ -97,3 +97,36 @@ test("fetch wrapper captures final streaming usage without consuming the stream"
   assert.equal(seen[0].tokensIn, 3);
   assert.equal(seen[0].tokensOut, 2);
 });
+
+test("fetch wrapper captures streaming usage when the consumer cancels before flush", async () => {
+  const seen: Array<{ tokensPerSecond?: number; model?: string }> = [];
+  const sse = [
+    "data: {\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}\n\n",
+    "data: {\"model\":\"stream-model\",\"choices\":[],\"usage\":{\"prompt_tokens\":3,\"completion_tokens\":2,\"total_tokens\":5,\"tokens_per_second\":19.75}}\n\n",
+    "data: [DONE]\n\n",
+  ].join("");
+  const encoder = new TextEncoder();
+  // A live SSE connection that stays open until the consumer cancels. The
+  // OpenAI SDK (used by Pi) stops at `data: [DONE]` and cancels instead of
+  // draining to EOF, so the TransformStream `flush` callback never runs.
+  const source = new ReadableStream<Uint8Array>({
+    start(controller) { controller.enqueue(encoder.encode(sse)); },
+  });
+  const inner = (async () => new Response(source, { headers: { "content-type": "text/event-stream" } })) as typeof fetch;
+  const wrapped = wrapFetchCaptureTelemetry(inner, (t) => { seen.push(t); }, { serverUrl: "https://omniroute.example" });
+
+  const res = await wrapped("https://omniroute.example/v1/chat/completions");
+  const reader = res.body!.getReader();
+  const decoder = new TextDecoder();
+  let text = "";
+  while (!text.includes("data: [DONE]")) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    text += decoder.decode(value, { stream: true });
+  }
+  await reader.cancel();
+
+  assert.ok(seen.length > 0, "expected telemetry capture before the consumer cancels");
+  assert.equal(seen[seen.length - 1].tokensPerSecond, 19.75);
+  assert.equal(seen[seen.length - 1].model, "stream-model");
+});
